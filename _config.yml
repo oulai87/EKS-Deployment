@@ -1,0 +1,16 @@
+theme: jekyll-theme-cayman
+social:
+  name: Milind Kejriwal
+  links:
+    - https://twitter.com/KejriwalMilind
+    - https://www.linkedin.com/in/milind-kejriwal
+    - https://github.com/Mkejriwal270
+plugins:
+  - jekyll-seo-tag
+image: https://mktestweb.s3.amazonaws.com/K8s-Quickstart-Static/K8s-Quckstart.jpg
+defaults:
+  - scope:
+      path: ""
+    values:
+      image:
+        path: https://mktestweb.s3.amazonaws.com/K8s-Quickstart-Static/K8s-Quckstart.jpg
