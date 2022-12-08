@@ -7,7 +7,7 @@ module "eks" {
   cluster_endpoint_public_access  = true
   tags = {
     Environment = "test"
-    GithubRepo  = "K8s-EKS-QuickStart"
+    GithubRepo  = "EKS-Deployment"
   }
   cluster_addons = {
     coredns = {
