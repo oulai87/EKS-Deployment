@@ -1,4 +1,4 @@
-name: "Fire-It-Up"
+name: "Fire-It-Up-For-Me"
 on:
   workflow_dispatch:
     inputs:
