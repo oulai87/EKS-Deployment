@@ -1,0 +1,126 @@
+
+name: "Deploy-EKS-user-def-VPC"
+on:
+  workflow_dispatch:
+    inputs:
+      cluster_name:
+        description: 'Enter cluster name'
+        required: true
+      subnets:
+        description: 'Enter space-separated subnet values'     
+        required: true
+      vpc-id:
+        description: 'Enter vpc ID'
+        required: true
+      region:
+        description: 'Enter AWS Region'
+        required: true
+      
+        
+  workflow_call:
+    inputs:
+      cluster_name:
+        type: string
+        required: true
+      subnets:
+        type: string     
+        required: true
+      vpc-id:
+        type: string
+        required: true
+      region:
+        type: string
+        required: true
+    secrets:
+      AWS_ACCESS_KEY_ID:
+        required: true
+      AWS_SECRET_ACCESS_KEY:
+        required: true
+      K8S_QS_TOKEN:
+        required: true
+        
+jobs:
+  terraform:
+    name: "Terraform"
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./infra/ExistingVPC
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+
+
+      - name: Get directory
+        run: pwd
+        
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v1
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ github.event.inputs.region }}
+
+      - name: Terraform Format
+        id: fmt
+        run: terraform fmt -check
+     
+      - name: Set Terraform Variables
+        run: |
+          li=$(python -c "import json;print(json.dumps(list((\"${{github.event.inputs.subnets}}\").split(\" \"))))")
+          echo $li
+          userarn=`aws sts get-caller-identity --output json | jq -r '.Arn'`
+          username=${userarn#*/}
+          echo $username
+          JSON_STRING=$( jq -n \
+                  --arg ua "$userarn" \
+                  --arg un "$username" \
+                  '{userarn: $ua, username: $un, groups: ["system:masters"]}' )
+          export TF_VAR_map_users=[$JSON_STRING]
+          export TF_VAR_existing_vpc_id=${{github.event.inputs.vpc-id}}
+          export TF_VAR_subnet_ids=$li
+          export TF_VAR_cluster_name=${{github.event.inputs.cluster_name}}
+          export TF_VAR_region=${{github.event.inputs.region}}
+          echo "existing_vpc_id = \"${TF_VAR_existing_vpc_id}\"" > dev.tfvars
+          echo "subnet_ids = ${TF_VAR_subnet_ids}" >> dev.tfvars
+          echo "cluster_name = \"${TF_VAR_cluster_name}\"" >> dev.tfvars
+          echo "region = \"${TF_VAR_region}\"" >> dev.tfvars
+          echo "map_users = ${TF_VAR_map_users}" >> dev.tfvars
+          cat dev.tfvars
+
+      - name: Terraform Init
+        id: init
+        run: terraform init 
+      
+      - name: Terraform Validate
+        id: validate
+        run: terraform validate -no-color 
+
+      - name: Terraform Plan
+        id: plan
+        run: terraform plan -no-color -var-file="dev.tfvars"
+        continue-on-error: true
+
+      - name: Terraform Plan Status
+        if: steps.plan.outcome == 'failure'
+        run: exit 1
+      
+      - name: Terraform Apply
+        if: github.ref == 'refs/heads/main'
+        run: terraform apply -auto-approve -var-file="dev.tfvars"
+      
+      - name: Get state
+        run: |
+             git status
+             git config --global user.email "actions.user@gmail.com"
+             git config --global user.name "Gh-Actions"
+             git add infra/ExistingVPC/terraform.tfstate
+             git commit -m "Workflow executed to deploy resources"
+             git push
+        env:
+          GITHUB_TOKEN: ${{ secrets.K8S_QS_TOKEN }}
+        working-directory: .
+        if: always()

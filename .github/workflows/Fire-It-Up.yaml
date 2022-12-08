@@ -1,0 +1,86 @@
+name: "Fire-It-Up"
+on:
+  workflow_dispatch:
+    inputs:
+      vpc_exists:
+        description: 'Are you using an existing VPC? (true/false)'
+        required: true
+      cluster_name:
+        description: 'Enter cluster name'
+        required: true
+      subnets:
+        description: 'Enter space-separated existing subnet ids'    
+      vpc-id:
+        description: 'Enter existing vpc ID'
+      angular_version:
+        description: 'Enter app version for angular'
+        required: true
+      react_version:
+        description: 'Enter app version for react'
+        required: true
+      region:
+        description: 'Enter AWS Region'
+        required: true
+       
+jobs:
+
+   create_cluster_in_existing_vpc:
+      uses: Mkejriwal270/K8s-EKS-QuickStart/.github/workflows/Deploy-EKS-user-def-VPC.yaml@main
+      with: 
+        cluster_name: ${{ github.event.inputs.cluster_name }}
+        subnets: ${{ github.event.inputs.subnets }}
+        vpc-id: ${{ github.event.inputs.vpc-id }}
+        region: ${{ github.event.inputs.region }}
+      secrets:
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        K8S_QS_TOKEN: ${{ secrets.K8S_QS_TOKEN }}
+      if : ${{ github.event.inputs.vpc_exists == 'true' }}
+
+   create_cluster_in_new_vpc:
+      uses: Mkejriwal270/K8s-EKS-QuickStart/.github/workflows/Deploy-EKS-new-VPC.yaml@main
+      with: 
+        cluster_name: ${{ github.event.inputs.cluster_name }}
+        region: ${{ github.event.inputs.region }}
+      secrets:
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        K8S_QS_TOKEN: ${{ secrets.K8S_QS_TOKEN }}
+      if: ${{ github.event.inputs.vpc_exists == 'false' }}
+        
+   setup_infra_components:
+      uses: Mkejriwal270/K8s-EKS-QuickStart/.github/workflows/Update-Infra-Helm.yaml@main
+      if: ${{ always() }}
+      needs: [create_cluster_in_existing_vpc,create_cluster_in_new_vpc]
+      with:
+        cluster_name: ${{ github.event.inputs.cluster_name }}
+        region: ${{ github.event.inputs.region }}
+      secrets:  
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        
+   setup_angular_app:
+      if: ${{ always() }}
+      uses: Mkejriwal270/K8s-EKS-QuickStart/.github/workflows/Deploy-App.yaml@main
+      needs: setup_infra_components
+      with:
+        cluster_name: ${{ github.event.inputs.cluster_name }}
+        version: ${{ github.event.inputs.angular_version }}
+        region: ${{ github.event.inputs.region }}
+        app_name: "angular"
+      secrets:  
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        
+   setup_react_app:
+      if: ${{ always() }}
+      uses: Mkejriwal270/K8s-EKS-QuickStart/.github/workflows/Deploy-App.yaml@main
+      needs: setup_infra_components
+      with:
+        app_name: "react"
+        cluster_name: ${{ github.event.inputs.cluster_name }}
+        version: ${{ github.event.inputs.react_version }}
+        region: ${{ github.event.inputs.region }}
+      secrets:  
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }} 

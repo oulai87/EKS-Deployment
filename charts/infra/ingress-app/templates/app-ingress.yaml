@@ -1,0 +1,26 @@
+{{- $secret := (index (lookup "v1" "Service" "nginx-ingress" "ingress-stack-nginx-ingress").status.loadBalancer.ingress 0).hostname }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: k8s-qs-ingress
+  namespace: default
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: {{ $secret }}
+      http:
+        paths:
+          - path: /angular-app
+            pathType: Prefix
+            backend:
+              service:
+                name: angular-app
+                port:
+                  number: 80
+          - path: /react-app
+            pathType: Prefix
+            backend:
+              service:
+                name: react-app
+                port:
+                  number: 80

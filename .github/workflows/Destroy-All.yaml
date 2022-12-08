@@ -1,0 +1,224 @@
+name: "Destroy-All"
+
+on:
+  workflow_dispatch:
+    inputs:
+      vpc_exists:
+        description: 'Did you use an existing VPC? (true/false)'
+        required: true
+        
+      cluster_name:
+        description: 'Enter cluster name'
+        required: true
+        
+      subnets:
+        description: 'Enter space-separated subnet values'     
+
+      vpc-id:
+        description: 'Enter vpc ID'
+
+      region:
+        description: 'Enter region'
+        required: true
+      
+      angular_version:
+        description: 'Enter app version for angular'
+        required: true
+
+      react_version:
+        description: 'Enter app version for react'
+        required: true
+
+jobs:
+  helm-delete:
+    name: "Helm-Delete"
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./charts/infra/ingress-stack
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+        
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{github.event.inputs.region}}
+          
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --name ${{github.event.inputs.cluster_name}}
+        
+      - name: Helm delete
+        run: helm uninstall ingress-stack -n nginx-ingress
+  
+  ECR-delete-images:
+    name: "ECR-Repo-Delete"
+    runs-on: ubuntu-latest  
+    steps:
+        
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{github.event.inputs.region}}
+    
+      - name: Delete ECR image
+        run: |
+          aws ecr batch-delete-image --repository-name k8s-quickstart-angular --image-ids imageTag=${{github.event.inputs.angular_version}}
+          aws ecr batch-delete-image --repository-name k8s-quickstart-react --image-ids imageTag=${{github.event.inputs.react_version}}
+          
+  terraform-destroy-ExistingVPC:
+    name: "Terraform_ExistingVPC"
+    runs-on: ubuntu-latest
+    needs: helm-delete
+    defaults:
+      run:
+        working-directory: ./infra/ExistingVPC
+    if: ${{ github.event.inputs.vpc_exists == 'true' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+
+      - name: HashiCorp - Setup Terraform
+        uses: hashicorp/setup-terraform@v2.0.2
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{github.event.inputs.region}}
+          
+      - name: Get subnet IDs
+        run: echo ${{github.event.inputs.subnets}}
+
+      - name: Set Terraform Variables
+        run: |
+          li=$(python -c "import json;print(json.dumps(list((\"${{github.event.inputs.subnets}}\").split(\" \"))))")
+          echo $li
+          userarn=`aws sts get-caller-identity --output json | jq -r '.Arn'`
+          username=${userarn#*/}
+          echo $username
+          JSON_STRING=$( jq -n \
+                  --arg ua "$userarn" \
+                  --arg un "$username" \
+                  '{userarn: $ua, username: $un, groups: ["system:masters"]}' )
+          export TF_VAR_map_users=[$JSON_STRING]
+          export TF_VAR_existing_vpc_id=${{github.event.inputs.vpc-id}}
+          export TF_VAR_subnet_ids=$li
+          export TF_VAR_cluster_name=${{github.event.inputs.cluster_name}}
+          export TF_VAR_region=${{github.event.inputs.region}}
+          echo "existing_vpc_id = \"${TF_VAR_existing_vpc_id}\"" > dev.tfvars
+          echo "subnet_ids = ${TF_VAR_subnet_ids}" >> dev.tfvars
+          echo "cluster_name = \"${TF_VAR_cluster_name}\"" >> dev.tfvars
+          echo "region = \"${TF_VAR_region}\"" >> dev.tfvars
+          echo "map_users = ${TF_VAR_map_users}" >> dev.tfvars
+          cat dev.tfvars
+          
+      - name: Terraform Init
+        id: init
+        run: terraform init 
+      
+      - name: Terraform Validate
+        id: validate
+        run: terraform validate -no-color 
+
+      - name: Terraform Plan
+        id: plan
+        run: terraform plan -no-color -var-file="dev.tfvars" -destroy -out=tfplan
+        continue-on-error: true
+
+      - name: Terraform Plan Status
+        if: steps.plan.outcome == 'failure'
+        run: exit 1
+
+      - name: Terraform Destroy
+        if: github.ref == 'refs/heads/main'
+        run: terraform apply -auto-approve tfplan
+  
+      - name: Get state
+        run: |
+             git status
+             git config --global user.email "mkejriwal270@gmail.com"
+             git config --global user.name "Gh-Actions"
+             git add infra/ExistingVPC/terraform.tfstate
+             git commit -m "Workflow executed to destroy resources"
+             git push
+        env:
+          GITHUB_TOKEN: ${{ secrets.K8S_QS_TOKEN }}
+        working-directory: .
+        
+  terraform-destroy-NewVPC:
+    name: "Terraform_NewVPC"
+    runs-on: ubuntu-latest
+    needs: helm-delete
+    defaults:
+      run:
+        working-directory: ./infra/NewVPC
+    if : ${{ github.event.inputs.vpc_exists == 'false' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+
+      - name: HashiCorp - Setup Terraform
+        uses: hashicorp/setup-terraform@v2.0.2
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{github.event.inputs.region}}
+
+      - name: Set Terraform Variables
+        run: |
+          userarn=`aws sts get-caller-identity --output json | jq -r '.Arn'`
+          username=${userarn#*/}
+          echo $username
+          JSON_STRING=$( jq -n \
+                  --arg ua "$userarn" \
+                  --arg un "$username" \
+                  '{userarn: $ua, username: $un, groups: ["system:masters"]}' )
+          export TF_VAR_map_users=[$JSON_STRING]
+          export TF_VAR_cluster_name=${{github.event.inputs.cluster_name}}
+          export TF_VAR_region=${{github.event.inputs.region}}
+          echo "cluster_name = \"${TF_VAR_cluster_name}\"" >> dev.tfvars
+          echo "region = \"${TF_VAR_region}\"" >> dev.tfvars
+          echo "map_users = ${TF_VAR_map_users}" >> dev.tfvars
+          cat dev.tfvars
+          
+      - name: Terraform Init
+        id: init
+        run: terraform init 
+      
+      - name: Terraform Validate
+        id: validate
+        run: terraform validate -no-color 
+
+      - name: Terraform Plan
+        id: plan
+        run: terraform plan -no-color -var-file="dev.tfvars" -destroy -out=tfplan
+        continue-on-error: true
+
+      - name: Terraform Plan Status
+        if: steps.plan.outcome == 'failure'
+        run: exit 1
+
+      - name: Terraform Destroy
+        if: github.ref == 'refs/heads/main'
+        run: terraform apply -auto-approve tfplan
+  
+      - name: Get state
+        run: |
+             git status
+             git config --global user.email "mkejriwal270@gmail.com"
+             git config --global user.name "Gh-Actions"
+             git add infra/NewVPC/terraform.tfstate
+             git commit -m "Workflow executed to destroy resources"
+             git push
+        env:
+          GITHUB_TOKEN: ${{ secrets.K8S_QS_TOKEN }}
+        working-directory: .

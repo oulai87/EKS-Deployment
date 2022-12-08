@@ -1,0 +1,72 @@
+name: "Update-Infra-Helm"
+on:
+  workflow_dispatch:
+    inputs:
+      cluster_name:
+        description: 'Enter cluster name'
+        required: true
+      region:
+        description: 'Enter AWS region'
+        required: true
+  workflow_call:
+    inputs:
+      cluster_name:
+        required: true
+        type: string
+      region:
+        required: true
+        type: string
+      
+    secrets:
+      AWS_ACCESS_KEY_ID:
+        required: true
+      AWS_SECRET_ACCESS_KEY:
+        required: true
+    
+jobs:
+  helm_install:
+    name: "Helm_Install"
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./charts/infra
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+        
+      - name: Get context
+        run: echo ${{ github.event.workflow_call }}
+        if: ${{ github.event_name == 'workflow_call' }}
+        
+      - name: View context attributes
+        uses: actions/github-script@v5
+        with:
+          script: console.log(context)
+          
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{github.event.inputs.region}}
+          
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --name ${{github.event.inputs.cluster_name}}
+        
+      - name: Helm install ingress stack
+        run: |
+          helm repo add nginx-stable https://helm.nginx.com/stable
+          helm repo update
+          helm upgrade --install ingress-stack nginx-stable/nginx-ingress --set controller.service.annotations."service\.beta\.kubernetes\.io/aws-load-balancer-type"="nlb" --namespace=nginx-ingress --create-namespace
+                                                                                                                
+        working-directory: ./charts/infra/ingress-stack
+     
+      - name: Sleep for 30 seconds
+        run: sleep 30s
+      
+      - name: Get LB URL
+        run: kubectl get svc -n nginx-ingress
+ 
+      - name: Helm install app ingress
+        run: helm upgrade --install ingress-app .
+        working-directory: ./charts/infra/ingress-app

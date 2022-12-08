@@ -1,0 +1,92 @@
+name: "Deploy-App"
+on:
+  workflow_dispatch:
+    inputs:
+       version:
+          description: Enter the app version
+          required: true
+       cluster_name:
+          description: Enter the cluster name
+          required: true
+       app_name:
+          description: Enter the app name without demo suffix
+          required: true
+       region:
+          description: Enter the AWS region
+          required: true
+
+  workflow_call:
+    inputs:
+      version:
+        type: string
+        required: true
+      cluster_name:
+        type: string     
+        required: true
+      app_name:
+        type: string
+        required: true
+      region:
+        type: string
+        required: true
+    secrets:
+      AWS_ACCESS_KEY_ID:
+        required: true
+      AWS_SECRET_ACCESS_KEY:
+        required: true
+        
+jobs:
+  set-props:
+    runs-on: ubuntu-latest
+    outputs:
+      workdir: ${{ steps.set-dir.outputs.workdir }}
+      version: ${{ steps.set-ver.outputs.version }}
+      clustername: ${{ steps.set-cname.outputs.clustername }}
+    steps:
+      - id: set-dir
+        run: |
+          echo "${{ github.event.inputs.app_name || inputs.app_name }}"
+          echo "workdir=${{ github.event.inputs.app_name || inputs.app_name }}"  >> $GITHUB_OUTPUT
+      - id: set-ver
+        run: echo "version=${{ github.event.inputs.version || inputs.version }}" >> $GITHUB_OUTPUT
+      - id: set-cname
+        run: echo "clustername=${{ github.event.inputs.cluster_name }}" >> $GITHUB_OUTPUT
+
+
+  docker-build:
+    name: "Docker-build"
+    runs-on: ubuntu-latest
+    needs: set-props
+    defaults:
+      run:
+        working-directory: "./app/${{needs.set-props.outputs.workdir}}-demo"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ github.event.inputs.region }}
+    
+      - name: Get AWS account name
+        run: aws sts get-caller-identity --output json | jq -r '.Account'
+
+      - name: Docker build and tag
+        run: |
+           Account=`aws sts get-caller-identity --output json | jq -r '.Account'`
+           aws ecr get-login-password --region ${{ github.event.inputs.region }} | docker login --username AWS --password-stdin ${Account}.dkr.ecr.${{ github.event.inputs.region }}.amazonaws.com
+           docker build -t k8s-quickstart-${{ needs.set-props.outputs.workdir }} .
+           docker tag k8s-quickstart-${{ needs.set-props.outputs.workdir }}:latest ${Account}.dkr.ecr.${{ github.event.inputs.region }}.amazonaws.com/k8s-quickstart-${{needs.set-props.outputs.workdir}}:${{needs.set-props.outputs.version}}
+           docker push ${Account}.dkr.ecr.${{ github.event.inputs.region }}.amazonaws.com/k8s-quickstart-${{needs.set-props.outputs.workdir}}:${{needs.set-props.outputs.version}}
+
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --name ${{needs.set-props.outputs.clustername}}
+  
+      - name: Helm update
+        run: |
+          Account=`aws sts get-caller-identity --output json | jq -r '.Account'`
+          helm upgrade ${{needs.set-props.outputs.workdir}}-app . --install --set image.repository=${Account}.dkr.ecr.${{ github.event.inputs.region }}.amazonaws.com/k8s-quickstart-${{needs.set-props.outputs.workdir}} --set image.tag=${{needs.set-props.outputs.version}}
+        working-directory: ./charts/app/${{ needs.set-props.outputs.workdir }}-app
