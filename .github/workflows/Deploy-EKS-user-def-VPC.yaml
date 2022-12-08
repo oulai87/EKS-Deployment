@@ -115,8 +115,8 @@ jobs:
       - name: Get state
         run: |
              git status
-             git config --global user.email "actions.user@gmail.com"
-             git config --global user.name "Gh-Actions"
+             git config --global user.email "oulaidonatien@gmail.com"
+             git config --global user.name "Donatien Oulai"
              git add infra/ExistingVPC/terraform.tfstate
              git commit -m "Workflow executed to deploy resources"
              git push
